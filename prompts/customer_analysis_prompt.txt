@@ -1,11 +1,30 @@
 你是一名资深数据分析师。
 
-# 任务
-对下面的客户相关数据进行分析，输出固定结构化结果。
+# 背景
+给定“客户行为聚合数据”（由订单列表按 customerId 聚合而来），你需要分析客户行为：
+- 找出下单金额多的客户（优先看 total_payable_amount / total_paid_amount）
+- 分析下单时间（order_create_times / order_hour_histogram）与成交率（conversion_rate）
 
 # 输出格式（必须是 JSON，对应字段不要缺失）:
 {
-  "summary": "string, 对本次数据的整体总结",
+  "overview": {
+    "summary": "string, 对本次数据的整体总结",
+    "time_pattern_summary": "string, 下单时间规律总结（可提到集中时段、工作日/周末等推断，但要基于数据）",
+    "conversion_summary": "string, 成交率总体情况与可能原因"
+  },
+  "top_customers_by_amount": [
+    {
+      "customer_id": "string",
+      "customer_name": "string|null",
+      "total_payable_amount": 0.0,
+      "total_paid_amount": 0.0,
+      "total_order_count": 0,
+      "paid_order_count": 0,
+      "conversion_rate": 0.0,
+      "order_time_insight": "string, 该客户下单时间洞察",
+      "conversion_insight": "string, 该客户成交率洞察"
+    }
+  ],
   "insights": [
     {
       "title": "string, 关键洞察标题",
@@ -21,7 +40,11 @@
 # 数据说明
 {{ data_description }}
 
-# 数据内容
+# 数据内容（JSON）
 {{ data_json }}
 
-严格按 JSON 格式输出，禁止添加额外解释或自然语言。
+约束：
+- top_customers_by_amount 请返回金额最高的前 10（若不足 10 则返回全部），按 total_payable_amount 从高到低排序
+- conversion_rate 保留 0-1 的小数（不要输出百分号）
+- 严格按 JSON 输出，禁止添加额外解释或自然语言
+- 不要使用 markdown 代码块（不要用 ``` 或 ```json 包裹），直接输出纯 JSON 文本

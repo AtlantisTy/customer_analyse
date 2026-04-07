@@ -10,8 +10,10 @@ class Settings(BaseModel):
     # OpenAI
     openai_api_key: str = Field(default="")
     openai_model_name: str = Field(default="gpt-4.1-mini")
+    openai_base_url: str = Field(default="")
     openai_temperature: float = Field(default=0.1)
-    openai_timeout_s: int = Field(default=60)
+    openai_timeout_s: int = Field(default=180)
+    openai_max_retries: int = Field(default=2)
 
     # Data sources
     api_a_base_url: str = Field(default="")
@@ -39,8 +41,10 @@ def get_settings() -> Settings:
     return Settings(
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         openai_model_name=os.getenv("OPENAI_MODEL_NAME", "gpt-4.1-mini"),
+        openai_base_url=os.getenv("OPENAI_BASE_URL", ""),
         openai_temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.1")),
-        openai_timeout_s=int(os.getenv("OPENAI_TIMEOUT_S", "60")),
+        openai_timeout_s=int(os.getenv("OPENAI_TIMEOUT_S", "180")),
+        openai_max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "2")),
         api_a_base_url=os.getenv("API_A_BASE_URL", ""),
         api_a_token=os.getenv("API_A_TOKEN", ""),
         api_b_base_url=os.getenv("API_B_BASE_URL", ""),

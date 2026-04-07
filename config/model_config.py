@@ -16,5 +16,6 @@ def get_llm() -> ChatOpenAI:
         base_url=settings.openai_base_url,
         temperature=settings.openai_temperature,
         timeout=settings.openai_timeout_s,
+        max_retries=settings.openai_max_retries,
     )
 

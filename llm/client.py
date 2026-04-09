@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from config.model_config import get_llm
+from config.settings import get_settings
 from schemas.input_data import RawApiRecord
 from schemas.result import AnalysisResult
 
@@ -22,6 +24,35 @@ def _load_prompt_template() -> ChatPromptTemplate:
 
 def _build_data_description(records: list[RawApiRecord]) -> str:
     return f"共有 {len(records)} 条客户记录，每条包含客户基本信息、消费金额、城市、标签等字段。"
+
+
+def _compact_records_for_llm(records: list[RawApiRecord], *, topn: int) -> list[dict[str, Any]]:
+    """
+    降低 tokens：不传订单明细/长时间列表，仅传关键聚合指标 + 小型时间分布 + Top 产品。
+    默认只传金额 TopN 客户（其余客户对“找大客户/下单时间/成交率”贡献较小）。
+    """
+    sorted_records = sorted(records, key=lambda r: r.total_payable_amount, reverse=True)
+    selected = sorted_records[: max(1, topn)]
+
+    out: list[dict[str, Any]] = []
+    for r in selected:
+        out.append(
+            {
+                "customer_id": r.customer_id,
+                "customer_name": r.customer_name,
+                "total_order_count": r.total_order_count,
+                "paid_order_count": r.paid_order_count,
+                "conversion_rate": r.conversion_rate,
+                "total_payable_amount": r.total_payable_amount,
+                "total_paid_amount": r.total_paid_amount,
+                "avg_payable_amount": r.avg_payable_amount,
+                "first_order_time": r.first_order_time,
+                "last_order_time": r.last_order_time,
+                "order_hour_histogram": r.order_hour_histogram,
+                "top_products": r.top_products[:5],
+            }
+        )
+    return out
 
 
 def _strip_markdown_json_fence(text: str) -> str:
@@ -98,14 +129,73 @@ def analyse_customers_with_llm(records: list[RawApiRecord]) -> AnalysisResult:
     if not records:
         raise ValueError("没有可供分析的记录。")
 
+    settings = get_settings()
     llm = get_llm()
     prompt = _load_prompt_template()
 
     chain = prompt | llm | StrOutputParser()
 
+    # 优先做“输入压缩”以提升速度与稳定性
+    compact = _compact_records_for_llm(records, topn=settings.llm_input_topn_customers)
+
+    # 超过阈值时启用分片（map）并发调用 + reduce 汇总
+    if settings.llm_chunk_enabled and len(compact) >= settings.llm_chunk_threshold_customers:
+        chunk_size = max(5, settings.llm_chunk_size_customers)
+        chunks = [compact[i : i + chunk_size] for i in range(0, len(compact), chunk_size)]
+
+        partials: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=max(1, settings.llm_chunk_concurrency)) as ex:
+            futures = []
+            for idx, ch in enumerate(chunks):
+                payload = {
+                    "data_description": _build_data_description(records)
+                    + f"\n当前为分片分析：第 {idx+1}/{len(chunks)} 片，仅包含部分客户。",
+                    "data_json": json.dumps(ch, ensure_ascii=False),
+                }
+                futures.append(ex.submit(chain.invoke, payload))
+
+            for fut in as_completed(futures):
+                raw = fut.result()
+                parsed = _parse_json_object_from_llm(raw)
+                partials.append(parsed)
+
+        # reduce：把所有分片产出的 top_customers/insights/suggestions 合并，再让模型做一次最终汇总
+        merged_top: dict[str, dict[str, Any]] = {}
+        merged_insights: list[dict[str, Any]] = []
+        merged_suggestions: list[str] = []
+        for p in partials:
+            for c in p.get("top_customers_by_amount", []) or []:
+                if isinstance(c, dict) and c.get("customer_id"):
+                    merged_top[str(c["customer_id"])] = c
+            for ins in p.get("insights", []) or []:
+                if isinstance(ins, dict):
+                    merged_insights.append(ins)
+            for s in p.get("suggestions", []) or []:
+                if isinstance(s, str):
+                    merged_suggestions.append(s)
+
+        reduce_payload = {
+            "data_description": "以下是多个分片的局部分析结果，请你做最终汇总并输出最终固定 JSON。",
+            "data_json": json.dumps(
+                {
+                    "partials_count": len(partials),
+                    "top_customers_candidates": list(merged_top.values()),
+                    "insights_candidates": merged_insights[:50],
+                    "suggestions_candidates": merged_suggestions[:50],
+                },
+                ensure_ascii=False,
+            ),
+        }
+        raw_output = chain.invoke(reduce_payload)
+        parsed = _parse_json_object_from_llm(raw_output)
+        parsed = _enrich_top_customers(parsed, records)
+        return AnalysisResult(**parsed)
+
+    # 不分片：单次调用
     payload = {
-        "data_description": _build_data_description(records),
-        "data_json": json.dumps([r.model_dump() for r in records], ensure_ascii=False),
+        "data_description": _build_data_description(records)
+        + f"\n说明：为提升速度，本次仅提供金额 Top{len(compact)} 客户的关键聚合指标。",
+        "data_json": json.dumps(compact, ensure_ascii=False),
     }
 
     raw_output: str = chain.invoke(payload)

@@ -31,7 +31,7 @@ class ApiAClient(BaseDataFetcher):
             headers["Authorization"] = f"{self.settings.api_a_token}"
         data = {
             "page": 1,
-            "pageSize": 10,
+            "pageSize": 50,
         }
 
         resp = requests.post(url, headers=headers, json=data,timeout=10)
